@@ -7,15 +7,28 @@
   [![React](https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://reactjs.org/)
   [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
   [![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)](https://supabase.com/)
+  [![Live Demo](https://img.shields.io/badge/Live_Demo-000000?style=for-the-badge&logo=vercel&logoColor=white)](http://fitr-navy.vercel.app)
 </div>
 
 ## 📱 Overview
 
 FiTr is a modern, intuitive financial tracking application designed to help you take control of your finances. Whether you're tracking daily expenses or planning monthly budgets, FiTr makes financial management simple and enjoyable.
 
+[Visit Live Demo](http://fitr-navy.vercel.app) 🚀
+
 <div align="center">
   <img src="https://raw.githubusercontent.com/soham203/Fitr/main/public/images/dashboard-preview.png" alt="FiTr Dashboard" width="800"/>
 </div>
+
+## 🌐 Live Demo
+
+Experience FiTr in action! Visit our live demo at [http://fitr-navy.vercel.app](http://fitr-navy.vercel.app)
+
+Features available in the demo:
+- Track your expenses
+- Set and manage budgets
+- View interactive charts
+- Explore the user interface
 
 ## ✨ Key Features
 
