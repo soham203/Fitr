@@ -69,13 +69,52 @@ export type Feedback = {
 
 // Helper functions for database operations
 export async function getCategories() {
-  const { data, error } = await supabase
-    .from('categories')
-    .select('*')
-    .order('name');
-  
-  if (error) throw error;
-  return data;
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      console.error('No authenticated user found when fetching categories');
+      return [];
+    }
+
+    console.log('Fetching categories for user:', user.id);
+    
+    const { data, error } = await supabase
+      .from('categories')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('name');
+    
+    if (error) {
+      console.error('Error fetching categories:', error);
+      throw error;
+    }
+
+    if (!data || data.length === 0) {
+      console.log('No categories found for user, creating default categories');
+      await createDefaultCategories();
+      
+      // Fetch categories again after creating defaults
+      const { data: newData, error: newError } = await supabase
+        .from('categories')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('name');
+      
+      if (newError) {
+        console.error('Error fetching categories after creation:', newError);
+        throw newError;
+      }
+      
+      console.log('Categories after creation:', newData);
+      return newData;
+    }
+
+    console.log('Categories fetched successfully:', data);
+    return data;
+  } catch (err) {
+    console.error('Error in getCategories:', err);
+    throw err;
+  }
 }
 
 export async function getBudget(period: 'daily' | 'monthly') {
@@ -221,7 +260,10 @@ export async function createCategory(name: string) {
 export async function createDefaultCategories() {
   try {
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) throw new Error('Not authenticated');
+    if (!user) {
+      console.error('No authenticated user found when creating default categories');
+      return;
+    }
 
     const defaultCategories = [
       'Food & Dining',
@@ -237,21 +279,34 @@ export async function createDefaultCategories() {
     ];
 
     console.log('Creating default categories for user:', user.id);
-    const { error } = await supabase
-      .from('categories')
-      .insert(
-        defaultCategories.map(name => ({
-          user_id: user.id,
-          name
-        }))
-      );
+    
+    // Create default categories one by one to handle potential duplicates
+    for (const name of defaultCategories) {
+      try {
+        const { error: insertError } = await supabase
+          .from('categories')
+          .insert([{
+            user_id: user.id,
+            name
+          }])
+          .select();
 
-    if (error) {
-      console.error('Error creating default categories:', error);
-      throw error;
+        if (insertError) {
+          // If it's a duplicate error, we can ignore it
+          if (insertError.code === '23505') { // Unique violation
+            console.log(`Category "${name}" already exists for user`);
+            continue;
+          }
+          console.error(`Error creating category "${name}":`, insertError);
+        } else {
+          console.log(`Successfully created category "${name}"`);
+        }
+      } catch (err) {
+        console.error(`Error creating category "${name}":`, err);
+      }
     }
 
-    console.log('Default categories created successfully');
+    console.log('Default categories creation process completed');
   } catch (err) {
     console.error('Error in createDefaultCategories:', err);
     throw err;

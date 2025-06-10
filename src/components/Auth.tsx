@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { supabase, createDefaultCategories } from '@/lib/supabase';
 
 interface AuthProps {
   onAuthSuccess: () => void;
@@ -15,11 +15,23 @@ export default function Auth({ onAuthSuccess, initialIsSignUp = false }: AuthPro
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showConfirmationAlert, setShowConfirmationAlert] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  const [lastAttemptTime, setLastAttemptTime] = useState<number | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+
+    // Check if we need to wait before retrying
+    const now = Date.now();
+    if (lastAttemptTime && now - lastAttemptTime < 300000) { // 5 minutes cooldown for Brevo
+      const minutesLeft = Math.ceil((300000 - (now - lastAttemptTime)) / 60000);
+      setError(`Due to email service limits, please wait ${minutesLeft} minutes before trying again.`);
+      return;
+    }
+
     setLoading(true);
+    setLastAttemptTime(now);
 
     try {
       if (isSignUp) {
@@ -29,12 +41,18 @@ export default function Auth({ onAuthSuccess, initialIsSignUp = false }: AuthPro
           password,
           options: {
             emailRedirectTo: `${window.location.origin}/auth/callback`,
+            data: {
+              signup_time: new Date().toISOString(),
+            }
           },
         });
 
         if (signUpError) {
-          if (signUpError.message.includes('rate limit')) {
-            throw new Error('Too many signup attempts. Please wait a few minutes before trying again.');
+          if (signUpError.message.includes('rate limit') || 
+              signUpError.message.includes('email service') ||
+              signUpError.message.includes('too many requests')) {
+            setRetryCount(prev => prev + 1);
+            throw new Error('Email service is currently busy. Please try again in 5 minutes.');
           }
           throw signUpError;
         }
@@ -43,7 +61,23 @@ export default function Auth({ onAuthSuccess, initialIsSignUp = false }: AuthPro
           throw new Error('An account with this email already exists. Please sign in instead.');
         }
 
+        // Create default categories for the new user
+        try {
+          console.log('Attempting to create default categories...');
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user) {
+            console.log('User authenticated, creating default categories for:', user.id);
+            await createDefaultCategories();
+            console.log('Default categories creation completed');
+          } else {
+            console.error('No user found after signup');
+          }
+        } catch (err) {
+          console.error('Error creating default categories:', err);
+        }
+
         setShowConfirmationAlert(true);
+        setRetryCount(0);
       } else {
         const { error: signInError } = await supabase.auth.signInWithPassword({
           email,
@@ -51,12 +85,38 @@ export default function Auth({ onAuthSuccess, initialIsSignUp = false }: AuthPro
         });
 
         if (signInError) {
-          if (signInError.message.includes('rate limit')) {
-            throw new Error('Too many login attempts. Please wait a few minutes before trying again.');
+          if (signInError.message.includes('rate limit') || 
+              signInError.message.includes('email service') ||
+              signInError.message.includes('too many requests')) {
+            setRetryCount(prev => prev + 1);
+            throw new Error('Service is currently busy. Please try again in 5 minutes.');
           }
           throw signInError;
         }
+
+        // Check if this is the user's first login and create default categories if needed
+        try {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user) {
+            // Check if user has any categories
+            const { data: categories, error: categoriesError } = await supabase
+              .from('categories')
+              .select('*')
+              .eq('user_id', user.id);
+
+            if (categoriesError) {
+              console.error('Error checking categories:', categoriesError);
+            } else if (!categories || categories.length === 0) {
+              console.log('No categories found for user, creating default categories');
+              await createDefaultCategories();
+            }
+          }
+        } catch (err) {
+          console.error('Error checking/creating categories:', err);
+        }
+
         onAuthSuccess();
+        setRetryCount(0);
       }
     } catch (error: any) {
       let errorMessage = error.message;
@@ -67,8 +127,10 @@ export default function Auth({ onAuthSuccess, initialIsSignUp = false }: AuthPro
         errorMessage = 'Please check your email and confirm your account before signing in.';
       } else if (errorMessage.includes('Password should be at least')) {
         errorMessage = 'Password must be at least 6 characters long.';
-      } else if (errorMessage.includes('Email rate limit')) {
-        errorMessage = 'Too many signup attempts. Please wait a few minutes before trying again.';
+      } else if (errorMessage.includes('email service') || 
+                 errorMessage.includes('rate limit') || 
+                 errorMessage.includes('too many requests')) {
+        errorMessage = 'Email service is currently busy. Please try again in 5 minutes.';
       } else if (errorMessage.includes('Email sending failed')) {
         errorMessage = 'Unable to send confirmation email. Please try again later or contact support.';
       } else if (errorMessage.includes('already exists')) {

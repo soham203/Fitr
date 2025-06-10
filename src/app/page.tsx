@@ -9,7 +9,7 @@ import Dashboard from '@/components/Dashboard';
 import ExpenseForm from '@/components/ExpenseForm';
 import BudgetForm from '@/components/BudgetForm';
 import Records from '@/components/Records';
-import type { Expense, Category } from '@/lib/supabase';
+import type { Expense, Category } from '@/types';
 import FeedbackForm from '@/components/FeedbackForm';
 import LandingPage from '@/components/LandingPage';
 
@@ -58,11 +58,13 @@ export default function Home() {
     setIsLoading(true);
     setError(null);
     try {
+      console.log('Loading data for user:', user.id);
       const [expensesData, budgetData, categoriesData] = await Promise.all([
         getExpenses(),
         getBudget('monthly'),
         getCategories()
       ]);
+      console.log('Categories loaded:', categoriesData);
       setExpenses(expensesData);
       setBudget(budgetData?.amount || 0);
       setCategories(categoriesData);

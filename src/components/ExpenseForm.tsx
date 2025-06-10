@@ -19,6 +19,8 @@ export default function ExpenseForm({ categories, onSubmit }: ExpenseFormProps) 
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  console.log('ExpenseForm received categories:', categories);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
