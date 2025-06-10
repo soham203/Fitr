@@ -14,8 +14,22 @@ import {
   Cell,
   LineChart,
   Line,
+  Legend,
 } from 'recharts';
-import { Expense, Category } from '@/lib/supabase';
+import { Expense, Category } from '@/types';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import html2canvas from 'html2canvas';
+
+// Add type declaration for jsPDF with autoTable
+declare module 'jspdf' {
+  interface jsPDF {
+    autoTable: (options: any) => jsPDF;
+    lastAutoTable: {
+      finalY: number;
+    };
+  }
+}
 
 type ExpenseWithCategory = Expense & {
   categories?: {
@@ -30,29 +44,14 @@ interface DashboardProps {
 }
 
 // Enhanced color palette with more vibrant colors
-const COLORS = [
-  '#fca311', // Theme orange
-  '#14213d', // Dark blue
-  '#2a9d8f', // Teal
-  '#e76f51', // Coral
-  '#264653', // Navy
-  '#e9c46a', // Yellow
-  '#2b2d42', // Dark gray
-  '#8d99ae', // Light gray
-  '#ff6b6b', // Red
-  '#4ecdc4', // Mint
-  '#45b7d1', // Sky blue
-  '#96ceb4', // Sage
-  '#ffeead', // Cream
-  '#ff9999', // Pink
-  '#99b898', // Green
-  '#feceab', // Peach
-];
+const COLORS = ['#fca311', '#14213d', '#e63946', '#2a9d8f', '#e76f51', '#264653', '#2b2d42', '#8d99ae'];
 
 export default function Dashboard({ expenses, budget, categories }: DashboardProps) {
   const [timeRange, setTimeRange] = useState<'week' | 'month'>('week');
   const [selectedMonth, setSelectedMonth] = useState<string>('');
   const [filteredExpenses, setFilteredExpenses] = useState<ExpenseWithCategory[]>([]);
+  const [chartData, setChartData] = useState<any[]>([]);
+  const [dateRange, setDateRange] = useState<{ start: string; end: string }>({ start: '', end: '' });
 
   // Generate last 12 months for the dropdown
   const months = Array.from({ length: 12 }, (_, i) => {
@@ -65,57 +64,185 @@ export default function Dashboard({ expenses, budget, categories }: DashboardPro
   });
 
   useEffect(() => {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+
+    // Calculate date range
+    const startDate = new Date();
+    const endDate = new Date();
+
+    if (selectedMonth) {
+      const [year, month] = selectedMonth.split('-').map(Number);
+      startDate.setFullYear(year, month - 1, 1);
+      endDate.setFullYear(year, month, 0);
+    } else if (timeRange === 'week') {
+      startDate.setDate(now.getDate() - 7);
+    } else {
+      startDate.setDate(now.getDate() - 30);
+    }
+
+    // Update date range display
+    setDateRange({
+      start: startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      end: endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    });
+
+    // Filter expenses based on selected time range
     const filtered = expenses.filter((expense) => {
       const expenseDate = new Date(expense.created_at);
-      const now = new Date();
-      const startDate = new Date();
-
-      if (selectedMonth) {
-        // If a specific month is selected
-        const [year, month] = selectedMonth.split('-').map(Number);
-        const monthStart = new Date(year, month - 1, 1);
-        const monthEnd = new Date(year, month, 0);
-        return expenseDate >= monthStart && expenseDate <= monthEnd;
-      } else if (timeRange === 'week') {
-        // Last 7 days
-        startDate.setDate(now.getDate() - 7);
-        return expenseDate >= startDate;
-      } else {
-        // Last 30 days
-        startDate.setDate(now.getDate() - 30);
-        return expenseDate >= startDate;
-      }
+      expenseDate.setHours(0, 0, 0, 0);
+      return expenseDate >= startDate && expenseDate <= endDate;
     });
+
     setFilteredExpenses(filtered);
+
+    // Prepare data for the chart
+    const prepareChartData = () => {
+      const data: { [key: string]: number } = {};
+      const currentDate = new Date(startDate);
+      
+      // Initialize all dates in range with 0
+      while (currentDate <= endDate) {
+        const dateStr = currentDate.toLocaleDateString('en-US', { 
+          month: 'short', 
+          day: 'numeric' 
+        });
+        data[dateStr] = 0;
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+      
+      // Add actual expense data
+      filtered.forEach(expense => {
+        const date = new Date(expense.created_at);
+        const dateStr = date.toLocaleDateString('en-US', { 
+          month: 'short', 
+          day: 'numeric' 
+        });
+        data[dateStr] = (data[dateStr] || 0) + expense.amount;
+      });
+
+      // Convert to array and sort by date
+      return Object.entries(data)
+        .map(([date, amount]) => ({
+          date,
+          amount: Number(amount.toFixed(2))
+        }))
+        .sort((a, b) => {
+          const dateA = new Date(a.date);
+          const dateB = new Date(b.date);
+          return dateA.getTime() - dateB.getTime();
+        });
+    };
+
+    setChartData(prepareChartData());
   }, [expenses, timeRange, selectedMonth]);
 
   const totalExpenses = filteredExpenses.reduce((sum, expense) => sum + expense.amount, 0);
   const remaining = budget - totalExpenses;
   const percentageUsed = (totalExpenses / budget) * 100;
 
-  // Prepare data for daily expenses chart
-  const dailyChartData = filteredExpenses.reduce((acc: { date: string; amount: number }[], expense) => {
-    const date = new Date(expense.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    const existingDate = acc.find(item => item.date === date);
-    if (existingDate) {
-      existingDate.amount += expense.amount;
+  // Process expenses for category chart
+  const categoryChartData = filteredExpenses.reduce((acc: { name: string; value: number }[], expense) => {
+    const category = categories.find(c => c.id === expense.category_id)?.name || 'Other';
+    const existingCategory = acc.find(item => item.name === category);
+    if (existingCategory) {
+      existingCategory.value += expense.amount;
     } else {
-      acc.push({ date, amount: expense.amount });
+      acc.push({ name: category, value: expense.amount });
     }
     return acc;
-  }, []).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  }, []);
 
-  // Process expenses for category chart
-  const categoryData = filteredExpenses.reduce((acc: any, expense) => {
-    const category = expense.categories?.name || 'Uncategorized';
-    acc[category] = (acc[category] || 0) + expense.amount;
-    return acc;
-  }, {});
+  const formatCurrency = (amount: number) => {
+    // Convert to string with 2 decimal places
+    const formattedAmount = amount.toFixed(2);
+    // Add thousand separators
+    const parts = formattedAmount.split('.');
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return parts.join('.');
+  };
 
-  const categoryChartData = Object.entries(categoryData).map(([category, amount]) => ({
-    name: category,
-    value: amount
-  }));
+  const generatePDFReport = () => {
+    const doc = new jsPDF();
+    const pageWidth = doc.internal.pageSize.getWidth();
+    
+    // Add title
+    doc.setFontSize(20);
+    doc.text('Financial Report', pageWidth / 2, 20, { align: 'center' });
+    
+    // Add date range
+    doc.setFontSize(12);
+    const dateRangeText = selectedMonth 
+      ? `Report for ${months.find(m => m.value === selectedMonth)?.label}`
+      : `Report for last ${timeRange === 'week' ? '7' : '30'} days (${dateRange.start} - ${dateRange.end})`;
+    doc.text(dateRangeText, pageWidth / 2, 30, { align: 'center' });
+    
+    // Add budget overview
+    doc.setFontSize(14);
+    doc.text('Budget Overview', 14, 45);
+    doc.setFontSize(12);
+    
+    const budgetData = [
+      ['Total Budget', formatCurrency(budget)],
+      ['Total Expenses', formatCurrency(totalExpenses)],
+      ['Remaining', formatCurrency(remaining)],
+      ['Budget Used', `${percentageUsed.toFixed(1)}%`]
+    ];
+    
+    autoTable(doc, {
+      startY: 50,
+      head: [['Category', 'Amount']],
+      body: budgetData,
+      theme: 'grid',
+      headStyles: { fillColor: [252, 163, 17] },
+      styles: { fontSize: 10 }
+    });
+    
+    // Add expenses table
+    doc.setFontSize(14);
+    doc.text('Expense Details', 14, (doc as any).lastAutoTable.finalY + 15);
+    
+    const expensesData = filteredExpenses.map(expense => {
+      const category = categories.find(c => c.id === expense.category_id)?.name || 'Other';
+      return [
+        new Date(expense.created_at).toLocaleDateString(),
+        category,
+        expense.description,
+        formatCurrency(expense.amount)
+      ];
+    });
+    
+    autoTable(doc, {
+      startY: (doc as any).lastAutoTable.finalY + 20,
+      head: [['Date', 'Category', 'Description', 'Amount']],
+      body: expensesData,
+      theme: 'grid',
+      headStyles: { fillColor: [252, 163, 17] },
+      styles: { fontSize: 10 }
+    });
+    
+    // Add category summary
+    doc.setFontSize(14);
+    doc.text('Category Summary', 14, (doc as any).lastAutoTable.finalY + 15);
+    
+    const categorySummary = categoryChartData.map(item => [
+      item.name,
+      formatCurrency(item.value),
+      `${((item.value / totalExpenses) * 100).toFixed(1)}%`
+    ]);
+    
+    autoTable(doc, {
+      startY: (doc as any).lastAutoTable.finalY + 20,
+      head: [['Category', 'Amount', 'Percentage']],
+      body: categorySummary,
+      theme: 'grid',
+      headStyles: { fillColor: [252, 163, 17] },
+      styles: { fontSize: 10 }
+    });
+    
+    // Save the PDF
+    doc.save(`financial-report-${new Date().toISOString().split('T')[0]}.pdf`);
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -175,6 +302,30 @@ export default function Dashboard({ expenses, budget, categories }: DashboardPro
           </div>
         </div>
 
+        {/* Download Report Button - Mobile */}
+        <div className="lg:hidden mb-4">
+          <button
+            onClick={generatePDFReport}
+            className="w-full bg-[#fca311] text-white px-4 py-2 rounded-full shadow-lg hover:bg-[#e59210] transition-colors flex items-center justify-center gap-2 text-base font-semibold"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+              />
+            </svg>
+            Download Report
+          </button>
+        </div>
+
         {/* Budget Progress Card - Full Width */}
         <div className="bg-white rounded-2xl shadow-sm p-6 mb-8">
           <h3 className="text-lg font-semibold text-[#14213d] mb-4">Budget Progress</h3>
@@ -202,37 +353,66 @@ export default function Dashboard({ expenses, budget, categories }: DashboardPro
           </div>
         </div>
 
-        {/* Charts Grid - Side by Side */}
-        <div className="grid grid-cols-12 gap-4 md:gap-8">
-          {/* Daily Expenses Chart */}
-          <div className="col-span-12 lg:col-span-7">
-            <div className="bg-white rounded-2xl shadow-sm p-4 md:p-6 h-full">
-              <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 md:mb-6">
-                <div>
-                  <h3 className="text-lg font-semibold text-[#14213d]">Daily Expenses</h3>
-                  <p className="text-sm text-gray-600 mt-1">Track your spending over time</p>
-                </div>
-                <div className="text-right mt-2 md:mt-0">
-                  <p className="text-sm text-gray-600">Total Expenses</p>
-                  <p className="text-xl font-bold text-[#fca311]">₹{totalExpenses.toFixed(2)}</p>
-                </div>
+        {/* Download Report Button - Desktop */}
+        <button
+          onClick={generatePDFReport}
+          className="hidden lg:flex fixed bottom-6 right-6 bg-[#fca311] text-white px-6 py-3 rounded-full shadow-lg hover:bg-[#e59210] transition-colors items-center gap-2 text-lg font-semibold"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-6 w-6"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+            />
+          </svg>
+          Download Report
+        </button>
+
+        {/* Charts Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+          {/* Daily Expenses Bar Chart */}
+          <div className="bg-white rounded-2xl shadow-sm p-6">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6">
+              <div>
+                <h3 className="text-lg font-semibold text-[#14213d]">Daily Expenses</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  {selectedMonth 
+                    ? `Showing data for ${months.find(m => m.value === selectedMonth)?.label}`
+                    : `Showing last ${timeRange === 'week' ? '7' : '30'} days (${dateRange.start} - ${dateRange.end})`
+                  }
+                </p>
               </div>
-              <div className="h-[250px] md:h-[350px]">
+              <div className="text-right mt-2 md:mt-0">
+                <p className="text-sm text-gray-600">Total Expenses</p>
+                <p className="text-xl font-bold text-[#fca311]">₹{totalExpenses.toFixed(2)}</p>
+              </div>
+            </div>
+            
+            <div className="h-[300px]">
+              {chartData.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={dailyChartData} margin={{ top: 10, right: 20, left: 10, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <BarChart
+                    data={chartData}
+                    margin={{ top: 20, right: 20, left: 20, bottom: 40 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis 
-                      dataKey="date" 
-                      stroke="#14213d"
-                      tick={{ fill: '#14213d', fontSize: 12 }}
-                      height={40}
-                      tickMargin={5}
+                      dataKey="date"
+                      tick={{ fontSize: 12 }}
+                      height={60}
+                      angle={-45}
+                      textAnchor="end"
                     />
                     <YAxis 
-                      stroke="#14213d"
-                      tick={{ fill: '#14213d', fontSize: 12 }}
-                      width={60}
-                      tickMargin={5}
+                      tick={{ fontSize: 12 }}
+                      tickFormatter={(value) => `₹${value}`}
                     />
                     <Tooltip
                       contentStyle={{
@@ -243,23 +423,29 @@ export default function Dashboard({ expenses, budget, categories }: DashboardPro
                       }}
                       formatter={(value: number) => [`₹${value.toFixed(2)}`, 'Amount']}
                     />
-                    <Bar 
-                      dataKey="amount"
-                      fill="#fca311" 
-                      radius={[6, 6, 0, 0]}
-                      maxBarSize={40}
-                    />
+                    <Bar dataKey="amount" fill="#fca311" radius={[4, 4, 0, 0]} maxBarSize={40} />
                   </BarChart>
                 </ResponsiveContainer>
-              </div>
+              ) : (
+                <p className="text-center text-gray-500">No data found</p>
+              )}
             </div>
           </div>
 
-          {/* Category Distribution Chart */}
-          <div className="col-span-12 lg:col-span-5">
-            <div className="bg-white rounded-2xl shadow-sm p-4 md:p-6 h-full">
-              <h3 className="text-lg font-semibold text-[#14213d] mb-4 md:mb-6">Expenses by Category</h3>
-              <div className="h-[250px] md:h-[350px] flex items-center justify-center">
+          {/* Category Pie Chart */}
+          <div className="bg-white rounded-2xl shadow-sm p-6">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6">
+              <div>
+                <h3 className="text-lg font-semibold text-[#14213d]">Expenses by Category</h3>
+              </div>
+              <div className="text-right mt-2 md:mt-0">
+                <p className="text-sm text-gray-600">Total Expenses</p>
+                <p className="text-xl font-bold text-[#fca311]">₹{totalExpenses.toFixed(2)}</p>
+              </div>
+            </div>
+            
+            <div className="h-[300px]">
+              {categoryChartData.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie
@@ -284,6 +470,57 @@ export default function Dashboard({ expenses, budget, categories }: DashboardPro
                       ))}
                     </Pie>
                     <Tooltip
+                      formatter={(value: number) => [`₹${value.toFixed(2)}`, 'Amount']}
+                      contentStyle={{
+                        backgroundColor: 'white',
+                        border: '1px solid #e5e5e5',
+                        borderRadius: '12px',
+                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+                      }}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="text-center text-gray-500">No data found</p>
+              )}
+            </div>
+            {/* Color Legend */}
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              {categoryChartData.map((entry, index) => (
+                <div key={entry.name} className="flex items-center text-sm">
+                  <div 
+                    className="w-3 h-3 rounded-full mr-2" 
+                    style={{ backgroundColor: COLORS[index % COLORS.length] }}
+                  />
+                  <span className="text-gray-600 truncate">{entry.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Trend Line Chart */}
+          <div className="bg-white rounded-2xl shadow-sm p-6">
+            <h3 className="text-lg font-semibold text-[#14213d] mb-6">Spending Trend</h3>
+            <div className="h-[300px]">
+              {chartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart
+                    data={chartData}
+                    margin={{ top: 20, right: 20, left: 20, bottom: 40 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis 
+                      dataKey="date"
+                      tick={{ fontSize: 12 }}
+                      height={60}
+                      angle={-45}
+                      textAnchor="end"
+                    />
+                    <YAxis 
+                      tick={{ fontSize: 12 }}
+                      tickFormatter={(value) => `₹${value}`}
+                    />
+                    <Tooltip
                       contentStyle={{
                         backgroundColor: 'white',
                         border: '1px solid #e5e5e5',
@@ -292,25 +529,74 @@ export default function Dashboard({ expenses, budget, categories }: DashboardPro
                       }}
                       formatter={(value: number) => [`₹${value.toFixed(2)}`, 'Amount']}
                     />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-              {/* Color Legend */}
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                {categoryChartData.map((entry, index) => (
-                  <div key={entry.name} className="flex items-center text-sm">
-                    <div 
-                      className="w-3 h-3 rounded-full mr-2" 
-                      style={{ backgroundColor: COLORS[index % COLORS.length] }}
+                    <Line
+                      type="monotone"
+                      dataKey="amount"
+                      stroke="#fca311"
+                      strokeWidth={2}
+                      dot={{ fill: '#fca311', strokeWidth: 2 }}
+                      activeDot={{ r: 8 }}
                     />
-                    <span className="text-gray-600 truncate">{entry.name}</span>
-                  </div>
-                ))}
-              </div>
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="text-center text-gray-500">No data found</p>
+              )}
+            </div>
+          </div>
+
+          {/* Category Bar Chart */}
+          <div className="bg-white rounded-2xl shadow-sm p-6">
+            <h3 className="text-lg font-semibold text-[#14213d] mb-6">Category Comparison</h3>
+            <div className="h-[300px]">
+              {filteredExpenses.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={Object.entries(
+                      filteredExpenses.reduce((acc, expense) => {
+                        const category = categories.find(c => c.id === expense.category_id)?.name || 'Other';
+                        acc[category] = (acc[category] || 0) + expense.amount;
+                        return acc;
+                      }, {} as { [key: string]: number })
+                    ).map(([name, value]) => ({ name, value }))}
+                    margin={{ top: 20, right: 20, left: 20, bottom: 40 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis 
+                      dataKey="name"
+                      tick={{ fontSize: 12 }}
+                      height={60}
+                      angle={-45}
+                      textAnchor="end"
+                    />
+                    <YAxis 
+                      tick={{ fontSize: 12 }}
+                      tickFormatter={(value) => `₹${value}`}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: 'white',
+                        border: '1px solid #e5e5e5',
+                        borderRadius: '12px',
+                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+                      }}
+                      formatter={(value: number) => [`₹${value.toFixed(2)}`, 'Amount']}
+                    />
+                    <Bar
+                      dataKey="value"
+                      fill="#14213d"
+                      radius={[4, 4, 0, 0]}
+                      maxBarSize={40}
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="text-center text-gray-500">No data found</p>
+              )}
             </div>
           </div>
         </div>
       </div>
     </div>
   );
-} 
+}
